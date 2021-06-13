@@ -1,3 +1,4 @@
+
 // CPU-Speed 4.8 MHz to work without problems at 3.0V
 #define F_CPU 4800000
 #include <avr/io.h>
@@ -34,7 +35,7 @@ static uint16_t random_uint16(void) {
 int main(void) {
   uint8_t mode = MODE_SLEEP;
 
-  uint8_t buttonPressed = 1;
+  uint8_t buttonIsPressedOldState = 1;
 
   // extraData contains extra information in every mode, which can be used to calculate the effect
   uint16_t extraData = 0;
@@ -59,30 +60,30 @@ int main(void) {
   uint8_t pwm_state = 0;
 
   while (1) {
-    switch (mode) {
-      case MODE_FADING:
-        if (pwm_state == 0) {
+    // Only update the mode data on pwm_state == 0, between 1 and 255 every calculation is only for the software pwm
+    if (pwm_state == 0) {
+      switch (mode) {
+        case MODE_FADING:
           BLUE_BRIGHTNESS += extraData;
           RED_BRIGHTNESS += extraData;
           GREEN_BRIGHTNESS += extraData;
-        }
-        if (BLUE_BRIGHTNESS == 255) {
-          extraData = -1;
-        } else if (BLUE_BRIGHTNESS == 0) {
-          extraData = 1;  
-        }
-        break;
-
-
-      case MODE_STATIC:
-        BLUE_BRIGHTNESS = 255;
-        RED_BRIGHTNESS = 255;
-        GREEN_BRIGHTNESS = 255;
-        break;
-
-
-      case MODE_RAINBOW:
-        if (pwm_state == 0) {
+  
+          if (BLUE_BRIGHTNESS == 255) {
+            extraData = -1;
+          } else if (BLUE_BRIGHTNESS == 0) {
+            extraData = 1;  
+          }
+          break;
+  
+  
+        case MODE_STATIC:
+          BLUE_BRIGHTNESS = 255;
+          RED_BRIGHTNESS = 255;
+          GREEN_BRIGHTNESS = 255;
+          break;
+  
+  
+        case MODE_RAINBOW:
           switch (extraData) {
             case 0:
               BLUE_BRIGHTNESS = 255;
@@ -113,25 +114,23 @@ int main(void) {
               break;
               
           }
-        }
-        break;
-
-
-      case MODE_FIRE:
-        if (pwm_state == 0 && extraData == 0) {
-          uint16_t randVal = random_uint16();
-          RED_BRIGHTNESS = randVal & 0xFF;
-          GREEN_BRIGHTNESS = (randVal & 0xFF) / 8;
-          BLUE_BRIGHTNESS = 0;
-          extraData = ((uint8_t)((randVal > 8) & 0xFF)) * 8;
-        } else if (pwm_state == 0) {
-          extraData--;
-        }
-        break;
-
-
-      case MODE_HEARTBEAT:
-        if (pwm_state == 0) {
+          break;
+  
+  
+        case MODE_FIRE:
+          if (extraData == 0) {
+            uint16_t randVal = random_uint16();
+            RED_BRIGHTNESS = randVal & 0xFF;
+            GREEN_BRIGHTNESS = (randVal & 0xFF) / 8;
+            BLUE_BRIGHTNESS = 0;
+            extraData = ((uint8_t)((randVal > 8) & 0xFF)) * 8;
+          } else {
+            extraData--;
+          }
+          break;
+  
+  
+        case MODE_HEARTBEAT:
           GREEN_BRIGHTNESS = 0;
           BLUE_BRIGHTNESS = 0;
           if (extraData < 8) {
@@ -148,53 +147,59 @@ int main(void) {
             RED_BRIGHTNESS = 0;
           }
           extraData = (extraData + 1) % 120;
-        }
-        break;
+          break;
+  
+        case MODE_SLEEP:
+          // Turn all lights off
+          PORTB &= ~((1 << RED) | (1 << GREEN) | (1 << BLUE));
 
-
-      case MODE_SLEEP:
-        // Turn all lights off
-        PORTB &= ~((1 << RED) | (1 << GREEN) | (1 << BLUE));
-
-        if (!buttonPressed) {
-          sleepMode();
-          mode = 0;
-          buttonPressed = 1;
-        }
-        break;
+          // Only switch to sleepMode if the button is released, to prevent the AtTiny to wake up immediately
+          if (!buttonIsPressedOldState) {
+            // Start deep sleep mode
+            sleepMode();
+            mode = 0;
+            buttonIsPressedOldState = 1;
+          }
+          break;
       }
-
-      if (mode != MODE_SLEEP) {
-        if (RED_BRIGHTNESS > pwm_state) {
-          PORTB |= (1 << RED);
-        } else {
-          PORTB &= ~(1 << RED);
-        }
-        if (GREEN_BRIGHTNESS > pwm_state) {
-          PORTB |= (1 << GREEN);
-        } else {
-          PORTB &= ~(1 << GREEN);
-        }
-        if (BLUE_BRIGHTNESS > pwm_state) {
-          PORTB |= (1 << BLUE);
-        } else {
-          PORTB &= ~(1 << BLUE);
-        }
-        pwm_state++;
-      }
-
-      bool switchButtonIsPressed = (PINB & (1 << SWITCH_BUTTON)) > 0;
-      if (buttonPressed && switchButtonIsPressed) {
-        buttonPressed = 0;
-      }
-
-      if (mode != MODE_SLEEP && !buttonPressed && !switchButtonIsPressed) {
-        mode = (mode + 1) % MODE_COUNT;
-        buttonPressed = 1;
-        extraData = 0;
-      }
-      _delay_us(DELAY_US);
     }
+    
+    /**
+     * The folowing part is for the calculation of the software pwm
+     * Every color can have 256 brightness states and is active for
+     * the amount of cycles
+     */
+    if (RED_BRIGHTNESS > pwm_state) {
+      PORTB |= (1 << RED);
+    } else {
+      PORTB &= ~(1 << RED);
+    }
+    if (GREEN_BRIGHTNESS > pwm_state) {
+      PORTB |= (1 << GREEN);
+    } else {
+      PORTB &= ~(1 << GREEN);
+    }
+    if (BLUE_BRIGHTNESS > pwm_state) {
+      PORTB |= (1 << BLUE);
+    } else {
+      PORTB &= ~(1 << BLUE);
+    }
+    pwm_state++;
+
+    // Since the input pullup is activated a 0 means the button is pressed
+    bool buttonIsCurrentlyPressed = (PINB & (1 << SWITCH_BUTTON)) == 0;
+    if (!buttonIsCurrentlyPressed) {
+      buttonIsPressedOldState = 0;
+    }
+
+    // Make sure that only when the button is pressed down the mode is changed
+    if (!buttonIsPressedOldState && buttonIsCurrentlyPressed) {
+      mode = (mode + 1) % MODE_COUNT;
+      buttonIsPressedOldState = 1;
+      extraData = 0;
+    }
+    _delay_us(DELAY_US);
+  }
   return 0;
 }
 
@@ -208,5 +213,5 @@ static inline void sleepMode(void) {
   cli();
 }
 
-ISR(PCINT0_vect) {
-}
+// The ISR is only needed for waking the AtTiny up
+ISR(PCINT0_vect) {}
