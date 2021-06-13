@@ -17,6 +17,7 @@
 #define MODE_HEARTBEAT 4
 #define MODE_SLEEP 5
 #define RANDOM_SEED (161)
+#define DEBOUNCE_CYCLES 1000
 
 #define RED PB1
 #define GREEN PB0
@@ -36,6 +37,8 @@ int main(void) {
   uint8_t mode = MODE_SLEEP;
 
   uint8_t buttonIsPressedOldState = 1;
+
+  uint16_t debounceCycles = 0;
 
   // extraData contains extra information in every mode, which can be used to calculate the effect
   uint16_t extraData = 0;
@@ -158,7 +161,11 @@ int main(void) {
             // Start deep sleep mode
             sleepMode();
             mode = 0;
+
+            // Since we come from an interrupt, we have to save, that the button is down
             buttonIsPressedOldState = 1;
+            // Start debouncing
+            debounceCycles = 1;
           }
           break;
       }
@@ -188,15 +195,29 @@ int main(void) {
 
     // Since the input pullup is activated a 0 means the button is pressed
     bool buttonIsCurrentlyPressed = (PINB & (1 << SWITCH_BUTTON)) == 0;
-    if (!buttonIsCurrentlyPressed) {
+ 
+    bool isDebouncing = debounceCycles > 0;
+
+    if (isDebouncing) {
+      debounceCycles++;
+      if (debounceCycles > DEBOUNCE_CYCLES) {
+        debounceCycles = 0;
+        isDebouncing = false;
+      }
+    }
+
+    // Button release, we also debounce the button release
+    if (!buttonIsCurrentlyPressed && buttonIsPressedOldState && !isDebouncing) {
       buttonIsPressedOldState = 0;
+      debounceCycles = 1;
     }
 
     // Make sure that only when the button is pressed down the mode is changed
-    if (!buttonIsPressedOldState && buttonIsCurrentlyPressed) {
+    if (!buttonIsPressedOldState && buttonIsCurrentlyPressed && !isDebouncing) {
       mode = (mode + 1) % MODE_COUNT;
       buttonIsPressedOldState = 1;
       extraData = 0;
+      debounceCycles = 1;
     }
     _delay_us(DELAY_US);
   }
@@ -206,6 +227,9 @@ int main(void) {
 static inline void sleepMode(void) {
   GIMSK |= (1 << PCIE);   // pin change interrupt enable
   PCMSK |= (1 << PCINT4); // pin change interrupt enabled for PCINT4
+
+  // debounce 
+  delay(100);
   
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
   sei();
